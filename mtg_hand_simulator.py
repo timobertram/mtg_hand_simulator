@@ -60,13 +60,20 @@ def fetch_card(name):
     candidates = [name, clean] if clean != name else [name]
     for cand in candidates:
         for kwargs in ({"exact": cand}, {"fuzzy": cand}):
-            try:
-                card = scrython.cards.Named(**kwargs)
-                return build(card)
-            except Exception as e:
-                last_err = e
-                time.sleep(0.1)  # brief backoff before next attempt
-                continue
+            for attempt in range(3):
+                try:
+                    card = scrython.cards.Named(**kwargs)
+                    return build(card)
+                except Exception as e:
+                    last_err = e
+                    msg = str(e).lower()
+                    if "rate" in msg or "429" in msg:
+                        # Respect Scryfall: wait before retrying
+                        time.sleep(2.0 * (attempt + 1))
+                        continue
+                    else:
+                        # Not a rate-limit error (e.g. card not found) -> stop retrying this query
+                        break
     return {"_error": repr(last_err), "name": name}
 
 
@@ -162,7 +169,7 @@ if load_btn and decklist_text.strip():
     card_info = {}
     for i, name in enumerate(unique):
         card_info[name] = fetch_card(name)
-        time.sleep(0.05)  # respect Scryfall rate limit
+        time.sleep(0.15)  # ~6-7 req/sec, safely under Scryfall's 10/sec limit
         progress.progress((i + 1) / len(unique), text=f"Fetching: {name}")
     progress.empty()
 
@@ -410,20 +417,23 @@ if st.button("▶️ Run Simulation", type="primary", use_container_width=True):
 
     # Sample hands
     st.subheader("🖐️ Sample Hands")
+    n_samples = st.slider("How many sample hands to show", 10, 200, 50, step=10)
+
     sample_hands = []
     attempts = 0
-    while len(sample_hands) < 10 and attempts < 10000:
+    while len(sample_hands) < n_samples and attempts < n_samples * 100:
         hand = draw_hand(deck, hand_size)
         met = eval_dnf(hand, clauses, groups)
         sample_hands.append((hand, met))
         attempts += 1
 
-    for i, (hand, met) in enumerate(sample_hands):
-        icon = "✅" if met else "❌"
-        with st.expander(f"{icon} Hand {i+1}: {', '.join(hand)}"):
-            for ci, clause in enumerate(clauses):
-                if not clause:
-                    continue
-                clause_met = all(eval_op(count_target(hand, r["target"], groups), r["op"], r["value"]) for r in clause)
-                parts = [f"{r['target']} {r['op']} {r['value']} (got {count_target(hand, r['target'], groups)})" for r in clause]
-                st.write(f"{'✅' if clause_met else '❌'} Clause {ci+1}: " + " AND ".join(parts))
+    with st.container(height=400):
+        for i, (hand, met) in enumerate(sample_hands):
+            icon = "✅" if met else "❌"
+            with st.expander(f"{icon} Hand {i+1}: {', '.join(hand)}"):
+                for ci, clause in enumerate(clauses):
+                    if not clause:
+                        continue
+                    clause_met = all(eval_op(count_target(hand, r["target"], groups), r["op"], r["value"]) for r in clause)
+                    parts = [f"{r['target']} {r['op']} {r['value']} (got {count_target(hand, r['target'], groups)})" for r in clause]
+                    st.write(f"{'✅' if clause_met else '❌'} Clause {ci+1}: " + " AND ".join(parts))
